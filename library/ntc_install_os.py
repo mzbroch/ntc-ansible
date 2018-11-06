@@ -194,6 +194,7 @@ def main():
             system_image_file=dict(required=True),
             kickstart_image_file=dict(required=False),
             volume=dict(required=False, type='str'),
+            install_and_reboot=dict(required=False, type='bool'),
         ),
         mutually_exclusive=[['host', 'ntc_host'],
                             ['ntc_host', 'secret'],
@@ -261,6 +262,7 @@ def main():
     system_image_file = module.params['system_image_file']
     kickstart_image_file = module.params['kickstart_image_file']
     volume = module.params['volume']
+    install_and_reboot = module.params['install_and_reboot']
 
     if kickstart_image_file == 'null':
         kickstart_image_file = None
@@ -303,7 +305,8 @@ def main():
         else:
             device.set_boot_options(system_image_file,
                                     kickstart=kickstart_image_file,
-                                    volume=volume)
+                                    volume=volume,
+                                    install_and_reboot=install_and_reboot)
             install_state = device.get_boot_options()
 
         if not already_set(boot_options=install_state,
