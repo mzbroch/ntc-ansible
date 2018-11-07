@@ -156,22 +156,23 @@ install_state:
 import time
 
 from ansible.module_utils.basic import AnsibleModule, return_values
+
 try:
-    HAS_PYNTC = True
     from pyntc import ntc_device, ntc_device_by_name
+    HAS_PYNTC = True
 except ImportError:
     HAS_PYNTC = False
+
 try:
     # TODO: Ensure pyntc adds __version__
-    HAS_VERSION = True
     from pyntc import __version__
+    HAS_PYNTC_VERSION = True
 except ImportError:
-    HAS_VERSION = False
+    HAS_PYNTC_VERSION = False
 
 PLATFORM_NXAPI = 'cisco_nxos_nxapi'
 PLATFORM_IOS = 'cisco_ios_ssh'
 PLATFORM_EAPI = 'arista_eos_eapi'
-PLATFORM_JUNOS = 'juniper_junos_netconf'
 PLATFORM_F5 = 'f5_tmos_icontrol'
 PLATFORM_ASA = 'cisco_asa_ssh'
 
@@ -193,7 +194,7 @@ def main():
     module = AnsibleModule(
         argument_spec=dict(
             platform=dict(choices=[PLATFORM_NXAPI, PLATFORM_IOS, PLATFORM_EAPI,
-                                   PLATFORM_JUNOS, PLATFORM_F5, PLATFORM_ASA],
+                                   PLATFORM_F5, PLATFORM_ASA],
                           required=False),
             host=dict(required=False),
             username=dict(required=False, type='str'),
@@ -225,7 +226,7 @@ def main():
     if not HAS_PYNTC:
         module.fail_json(msg='pyntc Python library not found.')
     # TODO: Change to fail_json when deprecating older pyntc
-    if not HAS_VERSION:
+    if not HAS_PYNTC_VERSION:
         module.warn("Support for pyntc version < 0.0.9 is being deprecated; please upgrade pyntc")
 
     # TODO: Remove warning when deprecating reboot option on non-F5 devices
@@ -261,7 +262,7 @@ def main():
     # TODO: Remove checks when reboot is required for non-F5 devices
     if platform == 'cisco_nxos_nxapi' and not reboot:
         module.fail_json(msg='NXOS requires setting the "reboot" parameter to True')
-    if platform != 'cisco_nxos_nxapi' and reboot and not HAS_VERSION:
+    if platform != 'cisco_nxos_nxapi' and reboot and not HAS_PYNTC_VERSION:
         module.fail_json(msg='Using the "reboot" parameter requires pyntc version > 0.0.8')
 
     argument_check = {'host': host, 'username': username, 'platform': platform,
@@ -284,9 +285,6 @@ def main():
         device_type = platform
         device = ntc_device(device_type, host, username, password, **kwargs)
 
-    if device.device_type == PLATFORM_JUNOS:
-        module.fail_json(msg='Install OS for Juniper not supported.')
-
     system_image_file = module.params['system_image_file']
     kickstart_image_file = module.params['kickstart_image_file']
     volume = module.params['volume']
@@ -299,35 +297,51 @@ def main():
 
     if not module.check_mode:
         # TODO: Remove conditional when deprecating older pyntc
-        if HAS_VERSION:
+        if HAS_PYNTC_VERSION:
             # TODO: Remove conditional when requiring reboot for devices except for F5
-            if reboot or device.device_type == 'f5_tmos_icontrol':
-                # TODO: Ensure all devices support install_os method and return the same values and raise exceptions
+            if reboot: # or device.device_type == 'f5_tmos_icontrol':
+                # m: I don't consider we would need special treatment for F5,
+                #    are there any use cases I am missing? pyntc for F5 will
+                #    have the install_os with integrated reboot added as other vendors
+                ## TODO: Ensure all devices support install_os method and return the same values and raise exceptions
                 changed = device.install_os(system_image_file, kickstart=kickstart_image_file, volume=volume)
             else:
                 # TODO: Remove support for reboot option from all but F5
+                #
+                # m: Why would we want to remove reboot option for all? It's the coolest feature in that PR :)
+                #
                 changed = device.set_boot_options(system_image_file, kickstart=kickstart_image_file)
 
-            if reboot and device.device_type == 'f5_tmos_icontrol' and changed:
-                # TODO: Change F5 to raise exception if device does not come back
-                changed = device.reboot(confirm=True, volume=volume)
-                if not changed:
-                    raise TimeoutError("Unable to connect to device after waiting for it to boot back up")
+            #
+            # We already support _wait_for_device_reboot() in F5
+            #
+            # if reboot and device.device_type == 'f5_tmos_icontrol' and changed:
+            #     # TODO: Change F5 to raise exception if device does not come back
+            #     changed = device.reboot(confirm=True, volume=volume)
+            #     if not changed:
+            #         raise TimeoutError("Unable to connect to device after waiting for it to boot back up")
 
             # TODO: Move validation to pyntc and raise exception there
+
+            #
+            # m: what kind of validation? what we're missing here is the check_device() function from
+            #    ntc-reboot module - once we issue the reboot(), we immediately move to the check
+            #    without waiting for the device to be activated. I built those features in pyntc for F5 already
+            #
+
             install_state = device.get_boot_options()
-            if changed:
+            if changed and reboot: # in this block we should valide if the reboot flag was set to True
                 if device.device_type != 'f5_tmos_icontrol' and system_image_file != install_state['sys']:
                     module.fail_json(
                         msg="Attempted upgrade but did not boot to desired image",
-                        original_image=pre_install_boot_options,
+                        original_image=pre_install_boot_options['sys'],
                         current_image=install_state['sys']
                     )
                 elif device.device_type == 'f5_tmos_icontrol' and volume != install_state['active_volume']:
                     module.fail_json(
                         msg="Attempted upgrade but did not boot to desired image",
-                        original_volume=pre_install_boot_options,
-                        current_volume=install_state['sys']
+                        original_volume=pre_install_boot_options['active_volume'],
+                        current_volume=install_state['active_volume']
                     )
         # TODO: Remove contents of else when deprecating older pyntc
         else:
@@ -385,7 +399,7 @@ def main():
                     ):
                         module.fail_json(msg='Install not successful', install_state=install_state)
     else:
-        if HAS_VERSION:
+        if HAS_PYNTC_VERSION:
             # TODO: Ensure all devices support private method
             changed = device._image_booted(system_image_file, kickstart=kickstart_image_file, volume=volume)
         # TODO: Remove contents of else when deprecating older pyntc
